@@ -1,107 +1,89 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <gccore.h>
+#include <ogc/lwp_heap.h>
+#include <ogc/cache.h>
 #include <string.h>
 #include <wiiuse/wpad.h>
 #include "pngu.h"
-#include "cios_bin.h"
-#include "app_booter_bin.h"
-#include "stub_bin.h"
-#include "background_png.h"
+#include "test_bin.h"
+#include "mem2_manager.h"
 
-// #define ARAMSTART 0x8000
-#define EXECUTE_ADDR ((u8 *)0x92000000)
-#define BOOTER_ADDR ((u8 *)0x93000000)
-#define ARGS_ADDR ((u8 *)0x93200000)
-#define TITLE_1(x)	  ((u8)((x) >> 8))
-#define TITLE_2(x)	  ((u8)((x) >> 16))
-#define TITLE_3(x)	  ((u8)((x) >> 24))
-#define TITLE_4(x)	  ((u8)((x) >> 32))
-#define TITLE_5(x)	  ((u8)((x) >> 40))
-#define TITLE_6(x)	  ((u8)((x) >> 48))
-#define TITLE_7(x)	  ((u8)((x) >> 56))
+//loader files
+#include "patches.h"
+#include "loader.h"
+
+//Bin include
+#include "loader_bin.h"
+
+#include "background_png.h"
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
 
-typedef void (*entrypoint) (void);
-
 extern void __exception_closeall();
 
-static u8 *homebrewbuffer = EXECUTE_ADDR;
-static u32 homebrewsize = 0;
+static u8 *homebrewbuffer = NULL;
 
 int CopyHomebrewMemory(const u8 *temp, u32 pos, u32 len) {
-	homebrewsize += len;
+	homebrewbuffer = mem2_memalign(32, len, OTHER_AREA);
 	memcpy((homebrewbuffer) + pos, temp, len);
 
 	return 1;
 }
 
 void FreeHomebrewBuffer() {
-	homebrewbuffer = EXECUTE_ADDR;
-	homebrewsize = 0;
-
-	// Arguments.clear();
+	homebrewbuffer = NULL;
 }
 
-static inline bool IsDolLZ(const u8 *buf) {
-	return (buf[0x100] == 0x3C);
-}
+// void load_Stub() {
+// 	char *stubLoc = (char *)0x80001800;
+// 	memcpy(stubLoc, stub_bin, stub_bin_size);
+// 	DCFlushRange(stubLoc, stub_bin_size);
+// }
+//
+// u8 hbcStubAvailable() {
+// 	char *sig = (char *)0x80001804;
+// 	return (strncmp(sig, "STUBHAXX", 8) == 0);
+// }
+//
+// s32 Set_Stub(u64 reqID) {
+// 	if (!hbcStubAvailable())
+// 		return 0;
+//
+// 	char *stub = (char *)0x80002662;
+//
+// 	stub[0] = TITLE_7(reqID);
+// 	stub[1] = TITLE_6(reqID);
+// 	stub[8] = TITLE_5(reqID);
+// 	stub[9] = TITLE_4(reqID);
+// 	stub[4] = TITLE_3(reqID);
+// 	stub[5] = TITLE_2(reqID);
+// 	stub[12] = TITLE_1(reqID);
+// 	stub[13] = ((u8)(reqID));
+//
+// 	DCFlushRange(stub, 0x10);
+// 	return 1;
+// }
 
-static inline bool IsSpecialELF(const u8 *buf) {
-	return (*(u32 *)buf == 0x7F454C46 && buf[0x24] == 0);
-}
+int load_dol(const u8 *dol, u32 len) {
+	void* loader_addr = NULL;
+	loader_t loader = NULL;
 
-void load_Stub() {
-	char *stubLoc = (char *)0x80001800;
-	memcpy(stubLoc, stub_bin, stub_bin_size);
-	DCFlushRange(stubLoc, stub_bin_size);
-}
+	//prepare loader
+	loader_addr = mem2_memalign(32, loader_bin_size, OTHER_AREA);
 
-u8 hbcStubAvailable() {
-	char *sig = (char *)0x80001804;
-	return (strncmp(sig, "STUBHAXX", 8) == 0);
-}
+	memcpy(loader_addr, loader_bin, loader_bin_size);
+	DCFlushRange(loader_addr, loader_bin_size);
+	ICInvalidateRange(loader_addr, loader_bin_size);
+	loader = (loader_t)loader_addr;
 
-s32 Set_Stub(u64 reqID) {
-	if (!hbcStubAvailable())
-		return 0;
-
-	char *stub = (char *)0x80002662;
-
-	stub[0] = TITLE_7(reqID);
-	stub[1] = TITLE_6(reqID);
-	stub[8] = TITLE_5(reqID);
-	stub[9] = TITLE_4(reqID);
-	stub[4] = TITLE_3(reqID);
-	stub[5] = TITLE_2(reqID);
-	stub[12] = TITLE_1(reqID);
-	stub[13] = ((u8)(reqID));
-
-	DCFlushRange(stub, 0x10);
-	return 1;
-}
-
-int load_dol(const unsigned char *dol, unsigned int size_dol) {
-	CopyHomebrewMemory(dol, 0, size_dol);
-
-	DCFlushRange(homebrewbuffer, homebrewsize);
-	ICInvalidateRange(homebrewbuffer, homebrewsize);
-
-	memcpy(BOOTER_ADDR, app_booter_bin, app_booter_bin_size);
-	DCFlushRange(BOOTER_ADDR, app_booter_bin_size);
-	ICInvalidateRange(BOOTER_ADDR, app_booter_bin_size);
-
-	entrypoint entry = (entrypoint)BOOTER_ADDR;
-
-	load_Stub();
-	Set_Stub(0x100000002LL);
-
-	u32 level = IRQ_Disable();
+	ICSync();
+	// loader(dol, args, args != NULL, 0);
+	CopyHomebrewMemory(dol, 0, len);
+	__IOS_ShutdownSubsystems();
 	__exception_closeall();
-	entry();
-	IRQ_Restore(level);
+	loader(homebrewbuffer, NULL, false, 0);
 
 	return 0;
 }
@@ -171,8 +153,9 @@ int main(int argc, char **argv) {
 	VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
 
 	// Initialise the console, required for printf
-	CON_InitEx(xfb,48,90,88,17);
-	//SYS_STDIO_Report(true);
+	CON_InitEx(rmode,48,90,544,272);
+	SYS_STDIO_Report(true);
+
 	Gui_DrawPng(background_png, 0, 0);
 
 	// Make the display visible
@@ -183,8 +166,9 @@ int main(int argc, char **argv) {
 
 	// Wait for Video setup to complete
 	VIDEO_WaitVSync();
-	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+	if (rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
 
+	AddMem2Area(14 * 1024 * 1024, OTHER_AREA);
 
 	// The console understands VT terminal escape codes
 	// This positions the cursor on row 2, column 0
@@ -204,7 +188,7 @@ int main(int argc, char **argv) {
 		u32 pressed = WPAD_ButtonsDown(0);
 
 		// We return to the launcher application via exit
-		if ( pressed & WPAD_BUTTON_HOME ) load_dol(cios_bin, cios_bin_size);
+		if ( pressed & WPAD_BUTTON_HOME ) load_dol(test_bin, test_bin_size);
 
 		// Wait for the next frame
 		VIDEO_WaitVSync();

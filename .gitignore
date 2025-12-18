@@ -1,5 +1,6 @@
 build*
 *.elf
+*.bin
 *.dol
 *.map
 *.kate-swp
